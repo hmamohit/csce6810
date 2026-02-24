@@ -1,0 +1,14 @@
+Assay
+CAGE
+Biosample summary
+Homo sapiens GM12878
+Biosample Type
+cell line
+Replication type
+isogenic
+Description
+CAGE on human GM12878 cellular long polyadenylated RNA
+Nucleic acid type
+polyadenylated mRNA
+Size range
+>200
