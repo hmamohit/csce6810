@@ -1,0 +1,15 @@
+name: gene_exp
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - torch
+      - torch-scatter
+      - torch-sparse
+      - torch-geometric
+      - scikit-learn
+      - numpy
