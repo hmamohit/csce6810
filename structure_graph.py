@@ -16,7 +16,7 @@ EdgeWeight = Literal["rbf", "inv"]
 
 @dataclass(frozen=True)
 class StructureGraphConfig:
-    chrom: str = "chr19"
+    chrom: str
     bin_size: int = 1_000_000
     include_xyz_as_node_features: bool = False
     include_bin_index_as_node_features: bool = True
@@ -38,8 +38,8 @@ def _read_tsv(path: Path) -> Tuple[list[str], list[list[str]]]:
 
 def load_bin_expression_tsv(
     bin_expression_tsv: str | Path,
-    chrom: str = "chr19",
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    chrom: str,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     
     path = Path(bin_expression_tsv)
     header, rows = _read_tsv(path)
@@ -86,7 +86,14 @@ def parse_pdb_ca_coordinates(pdb_file: str | Path) -> np.ndarray:
                 continue
             if parts[2] != "CA":
                 continue
+            
+            xy = parts[6].split('-') # sometimes the y and z coords would come out like "11.091-100.794" with no space in between 
+            if len(xy) == 2 and xy[0] != '':
+                parts[6] = xy[0]
+                parts[7] = xy[1]
+            
             x, y, z = float(parts[5]), float(parts[6]), float(parts[7])
+            print(x,y,z)
             coords.append((x, y, z))
 
     if not coords:
@@ -143,13 +150,12 @@ def _make_split_masks(n: int, split: Tuple[float, float, float]) -> Tuple[torch.
     return train_mask, val_mask, test_mask
 
 
-def build_structure_graph_chr19(
+def build_structure_graph(
     pdb_file: str | Path,
     bin_expression_tsv: str | Path,
     cfg: Optional[StructureGraphConfig] = None,
-) -> Data:
+    ) -> Data:
     """Build a PyG `Data` graph for chr19 based on 3D neighbors only."""
-    cfg = cfg or StructureGraphConfig()
 
     bin_index, gene_count, y = load_bin_expression_tsv(bin_expression_tsv, chrom=cfg.chrom)
     coords = parse_pdb_ca_coordinates(pdb_file)
@@ -157,12 +163,10 @@ def build_structure_graph_chr19(
     # Assumption: one CA atom per 1Mb bin and ordered by bin index.
     n = len(bin_index)
     if coords.shape[0] != n:
-        raise ValueError(
-            f"Node count mismatch: {cfg.chrom} has {n} bins in expression TSV, "
-            f"but PDB has {coords.shape[0]} CA atoms. "
-            "If this is expected, we can add an alignment step."
-        )
-
+        print(f"Node count mismatch: {cfg.chrom} has {n} bins in expression TSV, but PDB has {coords.shape[0]} CA atoms.")
+        return None
+    
+    print(f'Bins and atoms match for {cfg.chrom}')
     # Node features
     feats = [gene_count.reshape(-1, 1)]
     if cfg.include_bin_index_as_node_features:

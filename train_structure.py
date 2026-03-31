@@ -9,9 +9,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from model import GraphTransformer
-from structure_graph import StructureGraphConfig, build_structure_graph_chr19
+from structure_graph import StructureGraphConfig, build_structure_graph
 from utils import CombinedLoss, compute_metrics, seed_everything
 
+from torch.utils.data import DataLoader
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -24,41 +25,42 @@ def _masked_metrics(pred_cont, pred_cls, y_cont, y_cls, mask: torch.Tensor):
     return compute_metrics(pred_cont, pred_cls, y_cont, y_cls)
 
 
-def run_epoch(model, data, criterion, optimizer=None, device=DEVICE):
+def run_epoch(model, data_list, criterion, optimizer=None, device=DEVICE):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
-    data = data.to(device)
-    ctx = torch.enable_grad() if is_train else torch.no_grad()
-    with ctx:
-        pred_cont, pred_cls = model(data)
-        loss, loss_reg, loss_cls = criterion(pred_cont, pred_cls, data.y, data.y_class)
-        if is_train:
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+    for data in data_list:
+        data = data.to(device)
+        ctx = torch.enable_grad() if is_train else torch.no_grad()
+        with ctx:
+            pred_cont, pred_cls = model(data)
+            loss, loss_reg, loss_cls = criterion(pred_cont, pred_cls, data.y, data.y_class)
+            if is_train:
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
 
-    train_m = _masked_metrics(pred_cont, pred_cls, data.y, data.y_class, data.train_mask)
-    val_m = _masked_metrics(pred_cont, pred_cls, data.y, data.y_class, data.val_mask)
-    test_m = _masked_metrics(pred_cont, pred_cls, data.y, data.y_class, data.test_mask)
+        train_m = _masked_metrics(pred_cont, pred_cls, data.y, data.y_class, data.train_mask)
+        val_m = _masked_metrics(pred_cont, pred_cls, data.y, data.y_class, data.val_mask)
+        test_m = _masked_metrics(pred_cont, pred_cls, data.y, data.y_class, data.test_mask)
 
     return float(loss.item()), float(loss_reg.item()), float(loss_cls.item()), train_m, val_m, test_m
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train expression predictor on chr19 structure-derived graph")
+    p = argparse.ArgumentParser(description="Train expression predictor on structure-derived graphs")
     p.add_argument(
         "--pdb",
         type=str,
-        default=str(Path("Data/structures/chr19_1mb_structure.pdb")),
-        help="Path to chr19 1Mb PDB structure",
+        default=Path("Data/structures/"),
+        help="Path to 1Mb PDB structures",
     )
     p.add_argument(
         "--bin-expression",
         type=str,
         default=str(Path("Data/preprocessing/GM12878_bin_expression_1Mb.tsv")),
-        help="Path to bin-level expression TSV (will filter to chr19)",
+        help="Path to bin-level expression TSV",
     )
     p.add_argument("--k", type=int, default=8)
     p.add_argument("--sigma", type=float, default=10.0)
@@ -79,22 +81,30 @@ def main():
     seed_everything(args.seed)
     print(f"Using device: {DEVICE}")
 
-    cfg = StructureGraphConfig(
-        neighbor_mode="knn",
-        k=args.k,
-        sigma=args.sigma,
-        include_xyz_as_node_features=False,
-        include_bin_index_as_node_features=True,
-    )
-    data = build_structure_graph_chr19(args.pdb, args.bin_expression, cfg)
+    chrms = []
+    for file in args.pdb.iterdir():
+        chrom = str(file).split("/")[2].split("_")[0] # assuming it starts as "Data/structures/chr10_1mb_structure.pdb", reduces to "chr10"
+        cfg = StructureGraphConfig(
+            chrom = chrom, 
+            neighbor_mode="knn",
+            k=args.k,
+            sigma=args.sigma,
+            include_xyz_as_node_features=False,
+            include_bin_index_as_node_features=True,
+        )
+        data = build_structure_graph(str(file), args.bin_expression, cfg)
+        if data is None: # Happens when pdb and tsv bin numbers for chromosome dont match
+            continue
 
-    # Discretize y for auxiliary classification head (like existing pipeline)
-    y_np = data.y.detach().cpu().numpy().reshape(-1, 1)
-    # quantile binning without sklearn dependency here
-    qs = np.quantile(y_np, np.linspace(0, 1, args.expr_bins + 1))
-    # make last edge inclusive
-    y_class = np.digitize(y_np.squeeze(-1), qs[1:-1], right=False)
-    data.y_class = torch.tensor(y_class, dtype=torch.long)
+        # Discretize y for auxiliary classification head (like existing pipeline)
+        y_np = data.y.detach().cpu().numpy().reshape(-1, 1)
+        # quantile binning without sklearn dependency here
+        qs = np.quantile(y_np, np.linspace(0, 1, args.expr_bins + 1))
+        # make last edge inclusive
+        y_class = np.digitize(y_np.squeeze(-1), qs[1:-1], right=False)
+        data.y_class = torch.tensor(y_class, dtype=torch.long)
+
+        chrms.append(data)
 
     in_channels = data.x.size(-1)
     model = GraphTransformer(
@@ -117,7 +127,7 @@ def main():
     print("\nEpoch | Loss | Val RMSE | Val PCC")
     print("-" * 32)
     for epoch in range(1, args.epochs + 1):
-        loss, _, _, train_m, val_m, _ = run_epoch(model, data, criterion, optimizer)
+        loss, _, _, train_m, val_m, _ = run_epoch(model, chrms, criterion, optimizer)
         scheduler.step()
 
         if val_m["RMSE"] < best_val_rmse:
