@@ -13,3 +13,4 @@ dependencies:
       - torch-geometric
       - scikit-learn
       - numpy
+      - tqdm

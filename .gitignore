@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project artifacts (generated during experiments/training)
+*.pt
+*.pkl
+logs/*.log
+logs/*_metrics.csv
+logs/*_curves.png
+logs/*_test_cm.png
+predictions*.png
+training*.png
+
+# OS files
+.DS_Store
+data/

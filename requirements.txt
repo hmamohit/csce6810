@@ -4,3 +4,4 @@ torch-sparse
 torch-geometric
 scikit-learn
 numpy
+tqdm
