@@ -11,12 +11,12 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
 ORGANISM = "gm12878"
-BIN_SIZE = 25_000
+BIN_SIZE = 100_000
 SINGLE_CHROMOSOME: Optional[str] = None
 
 HIC_DIR = DATA_DIR / "hic_matrix" / ORGANISM
 HIC_FALLBACK_DIR = DATA_DIR / "hic_matrix"
-STRUCTURE_DIR = DATA_DIR / "structures" / f"{ORGANISM}_25kb"
+STRUCTURE_DIR = DATA_DIR / "structures" / f"{ORGANISM}_100kb"
 GENE_EXPR_FILE = DATA_DIR / "gene_expression" / f"{ORGANISM}.tsv"
 OUTPUT_DIR = DATA_DIR / "preprocessing"
 

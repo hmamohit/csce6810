@@ -5,7 +5,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -36,7 +35,7 @@ CONFIG = {
     "lr": 1e-3,
     "weight_decay": 1e-4,
     "num_epochs": 600,
-    "patience": 600,
+    "patience": 30,
     "train_ratio": 0.80,
     "val_ratio": 0.10,
     "label_smoothing": 0.02,
@@ -746,7 +745,7 @@ def save_training_curves(history: dict, plot_path: Path):
     axes[2].grid(alpha=0.3)
 
     plt.tight_layout()
-    fig.savefig(plot_path, dpi=150)
+    fig.savefig(plot_path, dpi=600)
     plt.close(fig)
 
 
@@ -767,7 +766,7 @@ def save_confusion_matrix_plot(cm: np.ndarray, class_names, plot_path: Path):
                     ha="center", va="center", color="black")
 
     plt.tight_layout()
-    fig.savefig(plot_path, dpi=150)
+    fig.savefig(plot_path, dpi=600)
     plt.close(fig)
 
 

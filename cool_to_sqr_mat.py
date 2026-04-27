@@ -5,7 +5,7 @@ INPUT_DIR = "/home/hc0783.unt.ad.unt.edu/workspace/data/gm12878"
 OUTPUT_DIR = "/home/hc0783.unt.ad.unt.edu/workspace/csce6810/data/hic_matrix/gm12878"
 
 ORGANISM = "gm12878"
-RES = [25000]
+RES = [100000]
 
 
 def minmax_scale_with_epsilon(matrix: np.ndarray) -> np.ndarray:
