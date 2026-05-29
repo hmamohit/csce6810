@@ -3,30 +3,34 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
 
+def unpack_dataset(data):
+    """
+    Support legacy .pt (list of dicts) and new format:
+      {"samples": [...], "tda_enabled": bool, ...}
+    """
+    if isinstance(data, dict) and "samples" in data:
+        return data["samples"], bool(data.get("tda_enabled", False))
+    return data, bool(len(data) > 0 and isinstance(data[0], dict) and "tda" in data[0])
+
+
 class HiCExpressionDataset(Dataset):
 
     def __init__(self, data):
-        self.data = data
+        samples, self.has_tda = unpack_dataset(data)
+        self.data = samples
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-
         item = self.data[idx]
-
-        # return {
-        #     "t_bins": item["t_bins"],
-        #     "ftr": item["ftr"],
-        #     "rel_pos": item["rel_pos"],
-        #     "abs_pos": item["abs_pos"],
-        #     "gene_exp": item["gene_exp"]
-        # }
-
-        return {
+        out = {
             "ftr": item["ftr"],
-            "gene_exp": item["gene_exp"]
+            "gene_exp": item["gene_exp"],
         }
+        if self.has_tda and "tda" in item:
+            out["tda"] = item["tda"]
+        return out
 
 
 def collate_fn(batch):
@@ -42,25 +46,15 @@ def collate_fn(batch):
     additive_mask = torch.zeros_like(binary_mask)
     additive_mask[binary_mask == 0] = -1e9
 
-    # rel_pos_list = [x["rel_pos"] for x in batch]
-    # padded_rel_pos = pad_sequence(
-    #     rel_pos_list, batch_first=True, padding_value=0.0)
-
     gene_exp = torch.stack([x["gene_exp"] for x in batch])
-    # abs_pos = torch.stack([x["abs_pos"] for x in batch])
-    # t_len = torch.stack([x["t_len"] for x in batch])
 
-    # return {
-    #     "ftr": padded_ftr,
-    #     "rel_pos": padded_rel_pos,
-    #     "gene_exp": gene_exp,
-    #     "abs_pos": abs_pos,
-    #     "t_len": t_len,
-    #     "attn_mask": additive_mask
-    # }
-
-    return {
+    out = {
         "ftr": padded_ftr,
         "gene_exp": gene_exp,
-        "attn_mask": additive_mask
+        "attn_mask": additive_mask,
     }
+
+    if "tda" in batch[0]:
+        out["tda"] = torch.stack([x["tda"] for x in batch])
+
+    return out

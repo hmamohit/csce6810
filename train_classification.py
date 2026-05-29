@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import csv
 import random
@@ -13,6 +15,11 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
 from tqdm.auto import tqdm
+
+try:
+    from src.hic_cubical_tda import load_tda_features
+except ImportError:
+    from hic_cubical_tda import load_tda_features
 
 
 SEED = 42
@@ -47,6 +54,7 @@ CONFIG = {
     "label_mode": "fixed_thresholds",
     "low_max": 0.01,
     "med_max": 1.0,
+    "use_tda": False,
 }
 
 
@@ -251,6 +259,7 @@ def balance_loaded_data(
     labels: np.ndarray,
     original_indices: np.ndarray,
     mode: str = "undersample",
+    tda_features: np.ndarray | None = None,
 ):
     counts = np.bincount(labels, minlength=3)
     if counts.min() <= 0:
@@ -271,6 +280,8 @@ def balance_loaded_data(
     kept_idx = np.concatenate(kept)
     rng.shuffle(kept_idx)
 
+    tda_out = None if tda_features is None else tda_features[kept_idx]
+
     return (
         weights[kept_idx],
         coords[kept_idx],
@@ -279,20 +290,34 @@ def balance_loaded_data(
         original_indices[kept_idx],
         counts,
         np.bincount(labels[kept_idx], minlength=3),
+        tda_out,
     )
 
 
 class ExpClassDataset(Dataset):
-    def __init__(self, weights: np.ndarray, coords: np.ndarray, labels: np.ndarray):
+    def __init__(
+        self,
+        weights: np.ndarray,
+        coords: np.ndarray,
+        labels: np.ndarray,
+        tda_features: np.ndarray | None = None,
+    ):
         self.weights = torch.from_numpy(weights)
         self.coords = torch.from_numpy(coords)
         self.labels = torch.from_numpy(labels.astype(np.int64))
+        self.tda = (
+            torch.from_numpy(tda_features.astype(np.float32))
+            if tda_features is not None
+            else None
+        )
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        return self.weights[idx], self.coords[idx], self.labels[idx]
+        if self.tda is None:
+            return self.weights[idx], self.coords[idx], self.labels[idx]
+        return self.weights[idx], self.coords[idx], self.tda[idx], self.labels[idx]
 
 
 class ExpTransformerClassifier(nn.Module):
@@ -304,11 +329,13 @@ class ExpTransformerClassifier(nn.Module):
         num_heads: int = 4,
         num_layers: int = 3,
         dropout: float = 0.1,
+        tda_dim: int = 0,
     ):
         super().__init__()
         assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
 
         self.num_neighbors = num_neighbors
+        self.tda_dim = int(tda_dim)
 
         self.weight_proj = nn.Sequential(
             nn.Linear(1, hidden_dim),
@@ -320,6 +347,14 @@ class ExpTransformerClassifier(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
         )
+        if self.tda_dim > 0:
+            self.tda_proj = nn.Sequential(
+                nn.Linear(self.tda_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+            )
+        else:
+            self.tda_proj = None
 
         self.pos_embedding = nn.Embedding(num_neighbors, hidden_dim)
 
@@ -335,8 +370,9 @@ class ExpTransformerClassifier(nn.Module):
         self.transformer = nn.TransformerEncoder(
             encoder_layer, num_layers=num_layers)
 
+        head_in = hidden_dim * (3 if self.tda_dim > 0 else 2)
         self.head = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(head_in, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 64),
@@ -345,7 +381,12 @@ class ExpTransformerClassifier(nn.Module):
             nn.Linear(64, num_classes),
         )
 
-    def forward(self, weights: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        weights: torch.Tensor,
+        coords: torch.Tensor,
+        tda: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         tokens = self.weight_proj(weights.unsqueeze(-1))
         positions = torch.arange(self.num_neighbors, device=weights.device)
         tokens = tokens + self.pos_embedding(positions).unsqueeze(0)
@@ -355,7 +396,12 @@ class ExpTransformerClassifier(nn.Module):
 
         out = self.transformer(tokens)
         agg = out.mean(dim=1)
-        combined = torch.cat([agg, coord_ctx], dim=-1)
+        parts = [agg, coord_ctx]
+        if self.tda_proj is not None:
+            if tda is None:
+                raise ValueError("Model expects TDA features but tda=None.")
+            parts.append(self.tda_proj(tda))
+        combined = torch.cat(parts, dim=-1)
         return self.head(combined)
 
 
@@ -369,6 +415,7 @@ def build_dataloaders(
     use_balanced_sampler: bool,
     sampler_power: float,
     seed: int,
+    tda_features: np.ndarray | None = None,
 ):
     n = len(labels)
     indices = np.arange(n)
@@ -394,7 +441,7 @@ def build_dataloaders(
         stratify=temp_labels if (can_stratify and temp_can_stratify) else None,
     )
 
-    dataset = ExpClassDataset(weights, coords, labels)
+    dataset = ExpClassDataset(weights, coords, labels, tda_features=tda_features)
     train_ds = Subset(dataset, train_idx.tolist())
     val_ds = Subset(dataset, val_idx.tolist())
     test_ds = Subset(dataset, test_idx.tolist())
@@ -470,12 +517,19 @@ def run_epoch(
 
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
-        for weights, coords, labels in iterator:
+        for batch in iterator:
+            if len(batch) == 4:
+                weights, coords, tda, labels = batch
+                tda = tda.to(device)
+            else:
+                weights, coords, labels = batch
+                tda = None
+
             weights = weights.to(device)
             coords = coords.to(device)
             labels = labels.to(device)
 
-            logits = model(weights, coords)
+            logits = model(weights, coords, tda=tda)
             loss = loss_fn(logits, labels)
 
             if train:
@@ -631,8 +685,15 @@ def evaluate_model(model, test_loader, device):
     with torch.no_grad():
         iterator = tqdm(test_loader, desc="Test Batches",
                         leave=False, dynamic_ncols=True, disable=TQDM_DISABLE)
-        for weights, coords, labels in iterator:
-            logits = model(weights.to(device), coords.to(device))
+        for batch in iterator:
+            if len(batch) == 4:
+                weights, coords, tda, labels = batch
+                logits = model(
+                    weights.to(device), coords.to(device), tda=tda.to(device)
+                )
+            else:
+                weights, coords, labels = batch
+                logits = model(weights.to(device), coords.to(device))
             preds = torch.argmax(logits, dim=1).cpu().numpy()
             y_pred_all.append(preds)
             y_true_all.append(labels.numpy())
@@ -682,15 +743,24 @@ def evaluate_model(model, test_loader, device):
     return y_true, y_pred, cm
 
 
-def predict_single_node_class(model, weights_array: np.ndarray, coords_array: np.ndarray, device):
+def predict_single_node_class(
+    model,
+    weights_array: np.ndarray,
+    coords_array: np.ndarray,
+    device,
+    tda_array: np.ndarray | None = None,
+):
     model.eval()
     w = torch.from_numpy(weights_array.astype(
         np.float32)).unsqueeze(0).to(device)
     c = torch.from_numpy(coords_array.astype(
         np.float32)).unsqueeze(0).to(device)
+    tda = None
+    if tda_array is not None:
+        tda = torch.from_numpy(tda_array.astype(np.float32)).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        logits = model(w, c)
+        logits = model(w, c, tda=tda)
         probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
 
     pred_class = int(np.argmax(probs))
@@ -786,6 +856,11 @@ def main():
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--no-tqdm", action="store_true")
     parser.add_argument("--num-sample-infer", type=int, default=10)
+    parser.add_argument(
+        "--use-tda",
+        action="store_true",
+        help="Load precomputed tda_features.npy from the data directory",
+    )
     args = parser.parse_args()
 
     set_global_seed(args.seed)
@@ -818,10 +893,25 @@ def main():
     console_kv("sampler_power", CONFIG["sampler_power"])
     console_kv("balance_loaded_data", CONFIG["balance_loaded_data"])
     console_kv("balance_mode", CONFIG["balance_mode"])
+    console_kv("use_tda", args.use_tda)
 
     console_log("\n[1/4] Loading preprocessed data ...")
     weights, coords, targets, data_paths = load_preprocessed_data(
         data_dir=data_dir, k=CONFIG["data_k"])
+
+    tda_features = None
+    tda_meta = {}
+    if args.use_tda:
+        tda_features, tda_meta = load_tda_features(data_dir)
+        if len(tda_features) < len(targets):
+            raise ValueError(
+                f"TDA rows ({len(tda_features)}) < aligned samples ({len(targets)}). "
+                "Re-run compute_hic_tda_features.py on the same preprocessing output."
+            )
+        tda_features = tda_features[: len(targets)]
+        console_kv("tda_feature_dim", int(tda_features.shape[1]))
+        if tda_meta:
+            console_kv("tda_meta", tda_meta.get("config", {}))
 
     labels, boundaries = make_labels(
         targets, mode=args.label_mode, low_max=args.low_max, med_max=args.med_max)
@@ -837,6 +927,7 @@ def main():
             original_indices,
             before_counts,
             after_counts,
+            tda_features,
         ) = balance_loaded_data(
             weights,
             coords,
@@ -844,6 +935,7 @@ def main():
             labels,
             original_indices,
             mode=CONFIG["balance_mode"],
+            tda_features=tda_features,
         )
         console_kv("balance counts before", {
                    CLASS_NAMES[i]: int(before_counts[i]) for i in range(3)})
@@ -883,6 +975,7 @@ def main():
         use_balanced_sampler=CONFIG["use_balanced_sampler"],
         sampler_power=CONFIG["sampler_power"],
         seed=args.seed,
+        tda_features=tda_features,
     )
 
     console_kv("dataset splits",
@@ -895,6 +988,7 @@ def main():
         split_stats["test_counts"][i]) for i in range(3)})
 
     console_log("\n[2/4] Building model ...")
+    tda_dim = int(tda_features.shape[1]) if tda_features is not None else 0
     model = ExpTransformerClassifier(
         num_neighbors=seq_len,
         num_classes=3,
@@ -902,6 +996,7 @@ def main():
         num_heads=CONFIG["num_heads"],
         num_layers=CONFIG["num_layers"],
         dropout=CONFIG["dropout"],
+        tda_dim=tda_dim,
     ).to(device)
 
     total_params = sum(p.numel()
@@ -961,8 +1056,13 @@ def main():
 
     for i, local_idx in enumerate(selected_local, start=1):
         global_idx = int(original_indices[test_idx[int(local_idx)]])
-        sample_weights_t, sample_coords_t, sample_label_t = test_loader.dataset[int(
-            local_idx)]
+        sample = test_loader.dataset[int(local_idx)]
+        if len(sample) == 4:
+            sample_weights_t, sample_coords_t, sample_tda_t, sample_label_t = sample
+            sample_tda = sample_tda_t.cpu().numpy()
+        else:
+            sample_weights_t, sample_coords_t, sample_label_t = sample
+            sample_tda = None
 
         sample_weights = sample_weights_t.cpu().numpy()
         sample_coords = sample_coords_t.cpu().numpy()
@@ -973,6 +1073,7 @@ def main():
             sample_weights,
             sample_coords,
             device,
+            tda_array=sample_tda,
         )
 
         probs_str = f"[{probs[0]:.3f}, {probs[1]:.3f}, {probs[2]:.3f}]"

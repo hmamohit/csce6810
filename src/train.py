@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, DistributedSampler, random_split
 from model import GeneExpression
 from torch.optim.lr_scheduler import OneCycleLR
-from data_loader import HiCExpressionDataset, collate_fn
+from data_loader import HiCExpressionDataset, collate_fn, unpack_dataset
 import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
@@ -19,6 +19,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 ROOT_PATH = "/home/hc0783.unt.ad.unt.edu/workspace/csce6810/data"
 DATA_FILE = f"{ROOT_PATH}/processed_tensors/hic_hg38_25000_norm_select.pt"
+DATA_FILE_TDA = f"{ROOT_PATH}/processed_tensors/hic_hg38_25000_norm_select_tda.pt"
+# USE_TDA: "auto" (pick *_tda.pt if present), "1" (force TDA file), "0" (baseline file)
+USE_TDA = os.environ.get("USE_TDA", "auto")
 BEST_MODEL = f"{ROOT_PATH}/hg38_gene_exp_select.pt.pt"
 CHECKPOINT = f"{ROOT_PATH}/hg38_25000_gene_exp_select_checkpoint.pt"
 LOG_DIR = f"{ROOT_PATH}/logs/test_tt"
@@ -109,7 +112,8 @@ def eval_loop(model, val_loader, criterion, device):
         for batch in val_loader:
             ftr = batch["ftr"].to(device)
             exp = batch["gene_exp"].to(device)
-            outputs = model(ftr=ftr)
+            tda = batch["tda"].to(device) if "tda" in batch else None
+            outputs = model(ftr=ftr, tda=tda)
             loss = criterion(outputs, exp)
             total_val_loss += loss.detach()
 
@@ -137,9 +141,10 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
         for batch in tqdm.tqdm(train_loader):
             ftr = batch["ftr"].to(device)
             exp = batch["gene_exp"].to(device)
+            tda = batch["tda"].to(device) if "tda" in batch else None
             optimizer.zero_grad()
 
-            outputs = model(ftr=ftr)
+            outputs = model(ftr=ftr, tda=tda)
             loss = criterion(outputs, exp)
 
             loss.backward()
@@ -231,7 +236,8 @@ def test_loop(model, test_loader, criterion, device, writer):
         for batch in test_loader:
             ftr = batch["ftr"].to(device)
             exp = batch["gene_exp"].to(device)
-            outputs = model(ftr=ftr)
+            tda = batch["tda"].to(device) if "tda" in batch else None
+            outputs = model(ftr=ftr, tda=tda)
             loss = criterion(outputs, exp)
             total_test_loss += loss.detach()
 
@@ -296,11 +302,33 @@ def test_loop(model, test_loader, criterion, device, writer):
     return avg_test_loss
 
 
-def load_data(writer):
-    if dist.get_rank() == 0:
-        logger(writer, f"Loading data from {DATA_FILE}", level=LOG_LEVELS.INFO)
+def resolve_data_file() -> str:
+    if USE_TDA == "1":
+        return DATA_FILE_TDA
+    if USE_TDA == "0":
+        return DATA_FILE
+    if os.path.exists(DATA_FILE_TDA):
+        return DATA_FILE_TDA
+    return DATA_FILE
 
-    data = torch.load(DATA_FILE)
+
+def load_data(writer):
+    data_path = resolve_data_file()
+    if dist.get_rank() == 0:
+        logger(writer, f"Loading data from {data_path}", level=LOG_LEVELS.INFO)
+
+    data = torch.load(data_path)
+    samples, has_tda = unpack_dataset(data)
+    tda_dim = int(samples[0]["tda"].numel()) if has_tda else 0
+
+    if dist.get_rank() == 0:
+        logger(
+            writer,
+            f"TDA features: {'enabled' if has_tda else 'disabled'} "
+            f"(tda_dim={tda_dim})",
+            level=LOG_LEVELS.INFO,
+        )
+
     dataset = HiCExpressionDataset(data)
 
     dataset_size = len(dataset)
@@ -359,7 +387,7 @@ def load_data(writer):
         logger(
             writer, f"Dataset split into {len(train_dataset)} training samples, {len(val_dataset)} validation samples, and {len(test_dataset)} test samples.", level=LOG_LEVELS.INFO)
 
-    return train_sampler, train_loader, val_loader, test_loader
+    return train_sampler, train_loader, val_loader, test_loader, tda_dim
 
 
 def main():
@@ -376,11 +404,18 @@ def main():
     if dist.get_rank() == 0:
         logger(writer, f"Number of Encoders: {NUM_ENCODERS}; Number of Heads: {NUM_HEADS}; Dropout: {DROPOUT}; Bias: {BIAS}; Batch Size: {BATCH_SIZE}; Learning Rate: {LEARNING_RATE}; Warmup Steps: {WARMUP_STEPS}; Patience: {PATIENT}", level=LOG_LEVELS.DEBUG)
 
-    train_sampler, train_loader, val_loader, test_loader = load_data(
+    train_sampler, train_loader, val_loader, test_loader, tda_dim = load_data(
         writer)
 
-    model = GeneExpression(num_encoders=NUM_ENCODERS, d_model=D_MODEL,
-                           d_ff=HIDDEN_DIM, num_heads=NUM_HEADS, dropout=DROPOUT, bias=BIAS).to(device)
+    model = GeneExpression(
+        num_encoders=NUM_ENCODERS,
+        d_model=D_MODEL,
+        d_ff=HIDDEN_DIM,
+        num_heads=NUM_HEADS,
+        dropout=DROPOUT,
+        bias=BIAS,
+        tda_dim=tda_dim,
+    ).to(device)
     model = DDP(model, device_ids=[local_rank])
 
     num_params = sum(p.numel() for p in model.parameters())
