@@ -6,7 +6,7 @@ import torch
 from collections import Counter
 
 
-ROOT_PATH = "/home/hc0783.unt.ad.unt.edu/workspace/csce6810/data"
+ROOT_PATH = "/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data"
 MATRIX_PATH = f"{ROOT_PATH}/processed_raw_data/hic_matrix"
 GENE_EXP_PATH = f"{ROOT_PATH}/processed_raw_data/gene_expression"
 

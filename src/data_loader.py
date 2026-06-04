@@ -4,7 +4,6 @@ from torch.nn.utils.rnn import pad_sequence
 
 
 class HiCExpressionDataset(Dataset):
-
     def __init__(self, data):
         self.data = data
 
@@ -12,7 +11,6 @@ class HiCExpressionDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-
         item = self.data[idx]
 
         # return {
@@ -20,7 +18,7 @@ class HiCExpressionDataset(Dataset):
         #     "ftr": item["ftr"],
         #     "rel_pos": item["rel_pos"],
         #     "abs_pos": item["abs_pos"],
-        #     "gene_exp": item["gene_exp"]
+        #     "gene_exp": item["gene_exp"]  
         # }
 
         return {
