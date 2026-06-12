@@ -19,9 +19,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 ROOT_PATH = "/home/hc0783.unt.ad.unt.edu/workspace/csce6810/data"
 DATA_FILE = f"{ROOT_PATH}/processed_tensors/hic_hg38_25000_norm_select.pt"
-BEST_MODEL = f"{ROOT_PATH}/hg38_gene_exp_select.pt.pt"
-CHECKPOINT = f"{ROOT_PATH}/hg38_25000_gene_exp_select_checkpoint.pt"
-LOG_DIR = f"{ROOT_PATH}/logs/test_tt"
+BEST_MODEL = f"{ROOT_PATH}/mm10_gene_exp_select.pt"
+CHECKPOINT = f"{ROOT_PATH}/mm10_gene_exp_select_checkpoint.pt"
+LOG_DIR = f"{ROOT_PATH}/logs/mm10_gene_exp"
 
 NUMS_WORKERS = 40
 D_MODEL = 256
