@@ -1,5 +1,4 @@
 import os
-
 import numpy as np
 import random
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -17,11 +16,16 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 
-ROOT_PATH = "/home/hc0783.unt.ad.unt.edu/workspace/csce6810/data"
-DATA_FILE = f"{ROOT_PATH}/processed_tensors/hic_hg38_25000_norm_select.pt"
-BEST_MODEL = f"{ROOT_PATH}/mm10_gene_exp_select.pt"
-CHECKPOINT = f"{ROOT_PATH}/mm10_gene_exp_select_checkpoint.pt"
-LOG_DIR = f"{ROOT_PATH}/logs/mm10_gene_exp"
+ROOT_PATH = "/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data"
+DATA_FILE = f"{ROOT_PATH}/processed_tensors/hg38_1000_gene_exp.pt"
+MODEL_NAME = "hg38_1000_gene_exp"
+OUTPUT_DIR = f"/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/output/{MODEL_NAME}"
+BEST_MODEL = f"{OUTPUT_DIR}/{MODEL_NAME}.pt"
+CHECKPOINT = f"{OUTPUT_DIR}/{MODEL_NAME}_checkpoint.pt"
+LOG_DIR = f"/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/logs/{MODEL_NAME}"
+
+IS_DISTRIBUTED = False
+IS_LOAD_CHECKPOINT = False
 
 NUMS_WORKERS = 40
 D_MODEL = 256
@@ -33,8 +37,8 @@ BIAS = True
 BATCH_SIZE = 100
 WARMUP_STEPS = 20
 NUM_EPOCHS = 500
-PATIENT = 20
-LEARNING_RATE = 1e-4
+PATIENT = 30
+LEARNING_RATE = 1e-3
 
 LOG_HISTORY_ALL = []
 LOG_HISTORY_INFO = []
@@ -51,7 +55,7 @@ class LOG_LEVELS:
 
 
 def logger(writer, message, level=LOG_LEVELS.INFO, global_step=0):
-    if dist.get_rank() == 0:
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         timestamp = datetime.now().strftime("%m-%d-%Y %H:%M:%S")
         message = f"[{timestamp}] [{level}] {message}"
         print(f"{message}")
@@ -105,25 +109,27 @@ def eval_loop(model, val_loader, criterion, device):
     model.eval()
     total_val_loss = torch.tensor(0.0, device=device)
     with torch.no_grad():
-
         for batch in val_loader:
             ftr = batch["ftr"].to(device)
             exp = batch["gene_exp"].to(device)
-            outputs = model(ftr=ftr)
+            mask = batch["attn_mask"].to(device)
+            outputs = model(ftr=ftr, attn_mask=mask)
             loss = criterion(outputs, exp)
             total_val_loss += loss.detach()
 
-    dist.all_reduce(total_val_loss, op=dist.ReduceOp.SUM)
-    avg_val_loss = (
-        total_val_loss.item()
-        / (len(val_loader) * dist.get_world_size())
-    )
+    if IS_DISTRIBUTED:
+        dist.all_reduce(total_val_loss, op=dist.ReduceOp.SUM)
+        world_size = dist.get_world_size()
+    else:
+        world_size = 1
+
+    avg_val_loss = total_val_loss.item() / (len(val_loader) * world_size)
 
     return avg_val_loss
 
 
 def train_loop(model, train_sampler, train_loader, val_loader, optimizer, scheduler, criterion, device, writer, start_epoch=0):
-    if dist.get_rank() == 0:
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         logger(writer, "Starting training...", level=LOG_LEVELS.INFO)
 
     min_val_loss = float('inf')
@@ -137,9 +143,10 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
         for batch in tqdm.tqdm(train_loader):
             ftr = batch["ftr"].to(device)
             exp = batch["gene_exp"].to(device)
+            mask = batch["attn_mask"].to(device)
             optimizer.zero_grad()
 
-            outputs = model(ftr=ftr)
+            outputs = model(ftr=ftr, attn_mask=mask)
             loss = criterion(outputs, exp)
 
             loss.backward()
@@ -148,13 +155,17 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
 
             total_train_loss += loss.detach()
 
-        dist.all_reduce(total_train_loss, op=dist.ReduceOp.SUM)
-        total_batches = len(train_loader) * dist.get_world_size()
-        avg_train_loss = total_train_loss.item() / total_batches
+        if IS_DISTRIBUTED:
+            dist.all_reduce(total_train_loss, op=dist.ReduceOp.SUM)
+            world_size = dist.get_world_size()
+        else:
+            world_size = 1
+        
+        avg_train_loss = total_train_loss.item() / (len(train_loader) * world_size)
 
         avg_val_loss = eval_loop(model, val_loader, criterion, device)
 
-        if dist.get_rank() == 0:
+        if not IS_DISTRIBUTED or dist.get_rank() == 0:
             logger(
                 writer,
                 f"Epoch {epoch+1}/{NUM_EPOCHS}, "
@@ -164,7 +175,7 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
             )
 
             writer.add_scalars(
-                "hg38/loss",
+                f"{MODEL_NAME}/loss",
                 {"train": avg_train_loss, "validation": avg_val_loss},
                 epoch + 1
             )
@@ -173,9 +184,10 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
             min_val_loss = avg_val_loss
             e_count = 0
 
-            if dist.get_rank() == 0:
+            if not IS_DISTRIBUTED or dist.get_rank() == 0:
+                save_model = model.module if IS_DISTRIBUTED else model
                 torch.save(
-                    model.module.state_dict(),
+                    save_model.state_dict(),
                     BEST_MODEL
                 )
 
@@ -187,11 +199,11 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
         else:
             e_count += 1
 
-        if (epoch + 1) % 10 == 0 and dist.get_rank() == 0:
-
+        if (epoch + 1) % 10 == 0 and (not IS_DISTRIBUTED or dist.get_rank() == 0):
+            save_model = model.module if IS_DISTRIBUTED else model
             torch.save({
                 "epoch": epoch,
-                "model_state_dict": model.module.state_dict(),
+                "model_state_dict": save_model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "min_val_loss": min_val_loss,
@@ -204,24 +216,26 @@ def train_loop(model, train_sampler, train_loader, val_loader, optimizer, schedu
             )
 
         stop_flag = torch.tensor(int(e_count > PATIENT), device=device)
-        dist.broadcast(stop_flag, src=0)
+        if IS_DISTRIBUTED:
+            dist.broadcast(stop_flag, src=0)
 
         if stop_flag.item() == 1:
-            if dist.get_rank() == 0:
+            if not IS_DISTRIBUTED or dist.get_rank() == 0:
                 logger(writer, "Early stopping triggered",
                        level=LOG_LEVELS.INFO)
             break
 
-    if dist.get_rank() == 0:
+    if dist.get_rank() == 0 or not IS_DISTRIBUTED:
         logger(writer, "Training completed.", level=LOG_LEVELS.INFO)
 
 
 def test_loop(model, test_loader, criterion, device, writer):
-    if dist.get_rank() == 0:
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         logger(writer, "Evaluating on test set...", level=LOG_LEVELS.INFO)
 
     checkpoint = torch.load(BEST_MODEL, map_location=device)
-    model.module.load_state_dict(checkpoint)
+    load_model = model.module if IS_DISTRIBUTED else model
+    load_model.load_state_dict(checkpoint)
     model.eval()
     total_test_loss = torch.tensor(0.0, device=device)
 
@@ -231,73 +245,81 @@ def test_loop(model, test_loader, criterion, device, writer):
         for batch in test_loader:
             ftr = batch["ftr"].to(device)
             exp = batch["gene_exp"].to(device)
-            outputs = model(ftr=ftr)
+            mask = batch["attn_mask"].to(device)
+            outputs = model(ftr=ftr, attn_mask=mask)
             loss = criterion(outputs, exp)
             total_test_loss += loss.detach()
 
             preds.append(outputs.detach())
             targets.append(exp.detach())
 
-    dist.all_reduce(total_test_loss, op=dist.ReduceOp.SUM)
-    total_batches = len(test_loader) * dist.get_world_size()
-    avg_test_loss = total_test_loss.item() / total_batches
+    if IS_DISTRIBUTED:
+        dist.all_reduce(total_test_loss, op=dist.ReduceOp.SUM)
+        world_size = dist.get_world_size()
+    else:
+        world_size = 1
+
+    avg_test_loss = total_test_loss.item() / (len(test_loader) * world_size)
 
     preds = torch.cat(preds, dim=0)
     targets = torch.cat(targets, dim=0)
-    gathered_preds = [torch.zeros_like(preds)
-                      for _ in range(dist.get_world_size())]
-    gathered_targets = [torch.zeros_like(targets)
-                        for _ in range(dist.get_world_size())]
-    dist.all_gather(gathered_preds, preds)
-    dist.all_gather(gathered_targets, targets)
+    
+    if IS_DISTRIBUTED:
+        gathered_preds = [torch.zeros_like(preds) for _ in range(world_size)]
+        gathered_targets = [torch.zeros_like(targets) for _ in range(world_size)]
+        dist.all_gather(gathered_preds, preds)
+        dist.all_gather(gathered_targets, targets)
+    else:
+        gathered_preds = [preds]
+        gathered_targets = [targets]
 
-    if dist.get_rank() == 0:
-        preds = torch.cat(gathered_preds, dim=0).cpu()
-        targets = torch.cat(gathered_targets, dim=0).cpu()
-        preds_np = preds.numpy()
-        targets_np = targets.numpy()
+    preds = torch.cat(gathered_preds, dim=0).cpu()
+    targets = torch.cat(gathered_targets, dim=0).cpu()
+    preds_np = preds.numpy()
+    targets_np = targets.numpy()
 
-        mae = mean_absolute_error(targets_np, preds_np)
-        mse = mean_squared_error(targets_np, preds_np)
-        rmse = np.sqrt(mse)
-        r2 = r2_score(targets_np, preds_np)
-        person, p_value = pearsonr(targets_np.flatten(), preds_np.flatten())
+    mae = mean_absolute_error(targets_np, preds_np)
+    mse = mean_squared_error(targets_np, preds_np)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(targets_np, preds_np)
+    person, p_value = pearsonr(targets_np.flatten(), preds_np.flatten())
 
-        logger(
-            writer,
-            f"hg38/loss/test: {avg_test_loss:.4f}",
-            level=LOG_LEVELS.INFO
-        )
+    logger(
+        writer,
+        f"{MODEL_NAME}/loss/test: {avg_test_loss:.4f}",
+        level=LOG_LEVELS.INFO
+    )
 
-        logger(
-            writer,
-            f"hg38/MAE: {mae:.6f}, "
-            f"hg38/MSE: {mse:.6f}, "
-            f"hg38/RMSE: {rmse:.6f}, "
-            f"hg38/R2: {r2:.6f}, "
-            f"hg38/Pearson: {person:.6f}, "
-            f"hg38/P-Value: {p_value:.6f}",
-            level=LOG_LEVELS.INFO
-        )
+    logger(
+        writer,
+        f"{MODEL_NAME}/MAE: {mae:.4f}, "
+        f"{MODEL_NAME}/MSE: {mse:.4f}, "
+        f"{MODEL_NAME}/RMSE: {rmse:.4f}, "
+        f"{MODEL_NAME}/R2: {r2:.4f}, "
+        f"{MODEL_NAME}/Pearson: {person:.4f}, "
+        f"{MODEL_NAME}/P-Value: {p_value:.4f}",
+        level=LOG_LEVELS.INFO
+    )
 
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         for i in range(len(preds)):
             writer.add_scalars(
-                "hg38/prediction",
+                f"{MODEL_NAME}/prediction",
                 {"pred": preds[i], "true": targets[i]},
                 i + 1
             )
 
-        logger(
-            writer,
-            "Test evaluation completed.",
-            level=LOG_LEVELS.INFO
-        )
+    logger(
+        writer,
+        "Test evaluation completed.",
+        level=LOG_LEVELS.INFO
+    )
 
     return avg_test_loss
 
 
 def load_data(writer):
-    if dist.get_rank() == 0:
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         logger(writer, f"Loading data from {DATA_FILE}", level=LOG_LEVELS.INFO)
 
     data = torch.load(DATA_FILE)
@@ -355,7 +377,7 @@ def load_data(writer):
         pin_memory=True
     )
 
-    if dist.get_rank() == 0:
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         logger(
             writer, f"Dataset split into {len(train_dataset)} training samples, {len(val_dataset)} validation samples, and {len(test_dataset)} test samples.", level=LOG_LEVELS.INFO)
 
@@ -363,28 +385,35 @@ def load_data(writer):
 
 
 def main():
-
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    set_seed(42)
     writer = SummaryWriter(LOG_DIR)
-    dist.init_process_group("nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
-    if dist.get_rank() == 0:
+
+    device = torch.device(
+        "cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if IS_DISTRIBUTED:
+        dist.init_process_group("nccl")
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         logger(writer, f"Using device: {device}", level=LOG_LEVELS.INFO)
 
-    set_seed(42)
-    if dist.get_rank() == 0:
-        logger(writer, f"Number of Encoders: {NUM_ENCODERS}; Number of Heads: {NUM_HEADS}; Dropout: {DROPOUT}; Bias: {BIAS}; Batch Size: {BATCH_SIZE}; Learning Rate: {LEARNING_RATE}; Warmup Steps: {WARMUP_STEPS}; Patience: {PATIENT}", level=LOG_LEVELS.DEBUG)
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
+        logger(writer, f"D Model: {D_MODEL}; Hidden Dimension: {HIDDEN_DIM}; Number of Encoders: {NUM_ENCODERS}; Number of Heads: {NUM_HEADS}; Dropout: {DROPOUT}; Bias: {BIAS}; Batch Size: {BATCH_SIZE}; Learning Rate: {LEARNING_RATE}; Warmup Steps: {WARMUP_STEPS}; Patience: {PATIENT}", level=LOG_LEVELS.DEBUG)
 
     train_sampler, train_loader, val_loader, test_loader = load_data(
         writer)
 
     model = GeneExpression(num_encoders=NUM_ENCODERS, d_model=D_MODEL,
                            d_ff=HIDDEN_DIM, num_heads=NUM_HEADS, dropout=DROPOUT, bias=BIAS).to(device)
-    model = DDP(model, device_ids=[local_rank])
+    if IS_DISTRIBUTED:
+        model = DDP(model, device_ids=[local_rank])
 
     num_params = sum(p.numel() for p in model.parameters())
-    if dist.get_rank() == 0:
+    if not IS_DISTRIBUTED or dist.get_rank() == 0:
         logger(
             writer, f"Model initialized with {num_params/1e6:.2f} Million parameters.", level=LOG_LEVELS.INFO)
 
@@ -403,10 +432,9 @@ def main():
 
     criterion = nn.MSELoss()
 
-    is_load_checkpoint = False
     start_epoch = 0
-    if is_load_checkpoint and os.path.exists(f"{CHECKPOINT}"):
-        if dist.get_rank() == 0:
+    if IS_LOAD_CHECKPOINT and os.path.exists(f"{CHECKPOINT}"):
+        if not IS_DISTRIBUTED or dist.get_rank() == 0:
             logger(
                 writer, f"Loading checkpoint from {CHECKPOINT}", level=LOG_LEVELS.INFO)
         checkpoint_data = torch.load(f"{CHECKPOINT}", map_location=device)
@@ -414,13 +442,22 @@ def main():
         optimizer.load_state_dict(checkpoint_data['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint_data['scheduler_state_dict'])
         start_epoch = checkpoint_data['epoch'] + 1
-        if dist.get_rank() == 0:
+        if not IS_DISTRIBUTED or dist.get_rank() == 0:
             logger(
                 writer, f"Resuming training from epoch {start_epoch}", level=LOG_LEVELS.INFO)
 
-    # train_loop(model, train_sampler, train_loader, val_loader,
-    #            optimizer, scheduler, criterion, device, writer, start_epoch)
+    train_loop(model, train_sampler, train_loader, val_loader,
+               optimizer, scheduler, criterion, device, writer, start_epoch)
     test_loop(model, test_loader, criterion, device, writer)
+
+    txt_log = os.path.join(LOG_DIR, f"{MODEL_NAME}.log")
+    with open(txt_log, "a", encoding="utf-8") as txt_file:
+        txt_file.write("\n".join(LOG_HISTORY_ALL) + "\n")
+        txt_file.flush()
+        txt_file.close()
+
+    writer.flush()
+    writer.close()
 
 
 if __name__ == "__main__":
