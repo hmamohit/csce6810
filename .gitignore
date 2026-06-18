@@ -216,3 +216,7 @@ training*.png
 # OS files
 .DS_Store
 data/
+processed/*
+.codex
+.codegraph
+runs/*
