@@ -219,4 +219,8 @@ data/
 processed/*
 .codex
 .codegraph
+graphify*
 runs/*
+*.md
+!README.md
+!readme.md
