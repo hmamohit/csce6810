@@ -8,9 +8,12 @@ dependencies:
   - pip
   - pip:
       - torch
-      - torch-scatter
-      - torch-sparse
-      - torch-geometric
-      - scikit-learn
       - numpy
+      - pandas
+      - scipy
+      - scikit-learn
+      - pyyaml
       - tqdm
+      - matplotlib
+      - cooler
+      - tensorboard

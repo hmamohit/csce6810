@@ -1,0 +1,90 @@
+root_path: /home/hc0783@unt.ad.unt.edu/workspace/geneexp/data
+resolution_bp: 1000
+
+regions:
+  pls_bp_window: 200
+  pls_pad_bins: 15
+  pels_bp_window: 2000
+  pels_pad_bins: 40
+  dels_bp_window: 100000
+  dels_pad_bins: 30
+  gene_body_pad_bins: 20
+
+model:
+  d_model: 256
+  d_ff: 1024
+  num_heads: 4
+  num_encoders: 2
+  dropout: 0.1
+  bias: true
+
+hic_cache:
+  memmap_dir: processed_tensors/hic_memmap
+  normalize_on_convert: true
+  load_mode: auto
+  ram_budget_gb: 64
+
+training:
+  batch_size: 32
+  num_epochs: 200
+  learning_rate: 0.001
+  weight_decay: 0.01
+  patience: 25
+  warmup_epochs: 5
+  lr_min_factor: 0.01
+  train_val_ratio: 0.9
+  num_workers: 4
+  use_amp: true
+  augment_noise_std: 0.02
+
+splits:
+  profiles: [hg38, mm10, multiorganism]
+  train:
+    hg38:
+      dtag: all
+      dmso: [rep1, rep2]
+      auxin_6h: all
+    mm10:
+      pnd11_mature: all
+      pnd11_immature: all
+      pnd6_immature: all
+      pnd6_precursors: [rep1]
+      pnd22: all
+      tsc: all
+    multiorganism:
+      combine: [hg38, mm10]
+      exclude:
+        hg38: [auxin_no_treatment]
+        mm10: [xen]
+  test:
+    hg38:
+      seen:
+        dtag: all
+      unseen_rep:
+        dtag: [rep3]
+      unseen_condition:
+        auxin_no_treatment: all
+      cross_org:
+        mm10:
+          xen: all
+    mm10:
+      seen:
+        pnd11_immature: all
+      unseen_rep:
+        pnd6_precursors: [rep2]
+      unseen_condition:
+        xen: all
+      cross_org:
+        hg38:
+          auxin_no_treatment: all
+    multiorganism:
+      seen:
+        hg38:
+          dtag: all
+        mm10:
+          pnd11_immature: all
+      unseen:
+        hg38:
+          auxin_no_treatment: all
+        mm10:
+          xen: all
