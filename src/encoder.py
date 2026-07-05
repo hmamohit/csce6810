@@ -1,46 +1,32 @@
+import os
+import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from attention import Attention
-from feed_fwn import FFN
+from attention import MultiHeadSelfAttention
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
-class Encoder(nn.Module):
-    def __init__(self, d_model: int, d_ff: int, num_heads: int, dropout: float = 0.1, bias: bool = True):
+class TransformerEncoderBlock(nn.Module):
+    """Pre-norm Transformer block: MHSA + MLP, each with a residual connection."""
+
+    def __init__(self, embed_dim: int, num_heads: int = 8, mlp_ratio: float = 4.0,
+                 dropout: float = 0.0, attn_dropout: float = 0.0):
         super().__init__()
-        self.attn = Attention(
-            d_model=d_model, num_heads=num_heads, dropout=dropout, bias=bias)
-        self.ffn = FFN(d_model=d_model, d_ff=d_ff)
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = MultiHeadSelfAttention(
+            embed_dim, num_heads, attn_dropout, dropout)
 
-        self.dropout = nn.Dropout(p=dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        hidden_dim = int(embed_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, embed_dim),
+            nn.Dropout(dropout),
+        )
 
-        self.attn_lnorm = nn.LayerNorm(d_model)
-        self.ffn_lnorm = nn.LayerNorm(d_model)
-
-    def forward(self, proj_ftr: torch.Tensor, padding_mask: torch.Tensor = None) -> torch.Tensor:
-
-        attn_sublayer = self.attn(
-            ftr=proj_ftr, key_val_states=None, attn_mask=padding_mask)
-        attn_sublayer = self.dropout(attn_sublayer)
-        attn_norm = self.attn_lnorm(proj_ftr + attn_sublayer)
-
-        ffn_sublayer = self.ffn(ftr=attn_norm)
-        ffn_sublayer = self.dropout(ffn_sublayer)
-        ffn_norm = self.ffn_lnorm(attn_norm + ffn_sublayer)
-
-        return ffn_norm
-
-
-class TransformerEncoder(nn.Module):
-    def __init__(self, num_encoders: int, d_model: int, d_ff: int, num_heads: int, dropout: float = 0.1, bias: bool = True):
-        super().__init__()
-
-        self.encoders = nn.ModuleList([Encoder(
-            d_model=d_model, d_ff=d_ff, num_heads=num_heads, dropout=dropout, bias=bias) for _ in range(num_encoders)])
-
-    def forward(self, proj_ftr: torch.Tensor, padding_mask: torch.Tensor = None) -> torch.Tensor:
-        output = proj_ftr
-        for encoder in self.encoders:
-            output = encoder(proj_ftr=output, padding_mask=padding_mask)
-
-        return output
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+        return x

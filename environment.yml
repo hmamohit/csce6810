@@ -1,19 +1,24 @@
-name: gene_exp
+
+# environment.yml
+name: genexp
 channels:
   - defaults
   - conda-forge
   - pytorch
+  - bioconda
+  - pyg
 dependencies:
   - python=3.11
-  - pip
-  - pip:
-      - torch
-      - numpy
-      - pandas
-      - scipy
-      - scikit-learn
-      - pyyaml
-      - tqdm
-      - matplotlib
-      - cooler
-      - tensorboard
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pyg
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - pyyaml
+  - tqdm
+  - matplotlib
+  - cooler
+  - tensorboard

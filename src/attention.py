@@ -1,78 +1,35 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import math
 
 
-class Attention(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1, bias: bool = True):
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, embed_dim: int, num_heads: int = 8,
+                 attn_dropout: float = 0.0, proj_dropout: float = 0.0):
         super().__init__()
-        self.d_model = d_model
+        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+
         self.num_heads = num_heads
-        self.d_head = d_model//num_heads
-        self.dropout_rate = dropout
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
 
-        self.q_proj = nn.Linear(d_model, d_model, bias=bias)
-        self.k_proj = nn.Linear(d_model, d_model, bias=bias)
-        self.v_proj = nn.Linear(d_model, d_model, bias=bias)
-        self.out_proj = nn.Linear(d_model, d_model, bias=bias)
-        self.dropout = nn.Dropout(p=dropout)
-        self.scaler = float(1.0/math.sqrt(self.d_head))
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=True)
+        self.attn_drop = nn.Dropout(attn_dropout)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        self.proj_drop = nn.Dropout(proj_dropout)
 
-    def forward(self, ftr: torch.Tensor, key_val_states: torch.Tensor = None, attn_mask: torch.Tensor = None) -> torch.Tensor:
-        batch_size, ftr_length, model_dim = ftr.size()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, D = x.shape
 
-        assert model_dim == self.d_model, f"Input feature dimension {model_dim} does not match model dimension {self.d_model}"
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
-        if key_val_states is not None:
-            assert key_val_states.size(
-                -1) == self.d_model, f"Cross attention key/value dimension {key_val_states.size(-1)} does not match model dimension {self.d_model}"
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
 
-        is_cross_attention = key_val_states is not None
-
-        Q_state = self.q_proj(ftr)
-        if is_cross_attention:
-            kv_ftr_len = key_val_states.size(1)
-            K_state = self.k_proj(key_val_states)
-            V_state = self.v_proj(key_val_states)
-        else:
-            kv_ftr_len = ftr_length
-            K_state = self.k_proj(ftr)
-            V_state = self.v_proj(ftr)
-
-        Q_state = Q_state.view(batch_size, ftr_length,
-                               self.num_heads, self.d_head).transpose(1, 2)
-        K_state = K_state.view(batch_size, kv_ftr_len,
-                               self.num_heads, self.d_head).transpose(1, 2)
-        V_state = V_state.view(batch_size, kv_ftr_len,
-                               self.num_heads, self.d_head).transpose(1, 2)
-
-        Q_state = Q_state * self.scaler
-        self.attn_weights = torch.matmul(Q_state, K_state.transpose(-1, -2))
-        if attn_mask is not None and not isinstance(attn_mask, torch.Tensor):
-            raise TypeError(
-                f"Attention mask must be a tensor, but got {type(attn_mask)}")
-
-        if attn_mask is not None:
-            attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
-            self.attn_weights = self.attn_weights + attn_mask
-            # attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
-            # self.attn_weights = self.attn_weights.masked_fill(
-            #     attn_mask,
-            #     float('-inf')
-            # )
-
-
-        attn_score = F.softmax(self.attn_weights, dim=-1)
-        attn_score = self.dropout(attn_score)
-        attn_output = torch.matmul(attn_score, V_state)
-
-        attn_output = attn_output.transpose(1, 2)
-        attn_output = attn_output.contiguous().view(
-            batch_size, ftr_length, self.num_heads*self.d_head)
-
-        attn_output = self.out_proj(attn_output)
-        assert attn_output.size() == (batch_size, ftr_length,
-                                      self.d_model), f"Attention output shape {attn_output.size()} does not match expected shape {(batch_size, ftr_length, self.d_model)}"
-
-        return attn_output
+        out = attn @ v
+        out = out.transpose(1, 2).reshape(B, N, D)
+        out = self.proj(out)
+        out = self.proj_drop(out)
+        return out

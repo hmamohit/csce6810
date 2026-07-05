@@ -1,64 +1,88 @@
+import pandas as pd
+import numpy as np
 import torch
 from torch.utils.data import Dataset
-from torch.nn.utils.rnn import pad_sequence
+from typing import List
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+_EPSILON = 1e-8
+CLIPPING_PERCENTILE = 99.99
 
 
-class HiCExpressionDataset(Dataset):
-    def __init__(self, data):
-        self.data = data
+class GeneExpressionDataset(Dataset):
+    def __init__(self, feature_list: List):
+        self.feature_list = feature_list
 
     def __len__(self):
-        return len(self.data)
+        return len(self.feature_list)
+
+    def _load_valid_matrix(self, feature: str):
+        ftr = np.load(feature)
+        if np.isnan(ftr).any() or np.isinf(ftr).any() or ftr.min() == ftr.max():
+            return None
+        return ftr
+
+    def log1p(self, matrix):
+        return np.log1p(matrix)
+
+    def normalize_feature(self, feature, attention, tpm, log=False, normalize=False):
+        if log:
+            feature = self.log1p(feature)
+            tpm = self.log1p(tpm)
+
+        if normalize:
+            upper = max(np.percentile(feature, CLIPPING_PERCENTILE))
+            if upper <= _EPSILON:
+                return None
+            feature = np.clip(feature, 0.0, upper) / upper
+
+        tensor_feature = torch.from_numpy(np.array(feature, dtype=np.float32))
+        tensor_attention = torch.from_numpy(np.array(attention, dtype=np.float32))
+        tensor_tpm = torch.tensor(tpm, dtype=torch.float32)
+
+        return tensor_feature, tensor_attention, tensor_tpm
 
     def __getitem__(self, idx):
-        item = self.data[idx]
+        key = self.feature_list[idx]
+        feature = self._load_valid_matrix(feature=key["feature"])
+        attention = np.load(key["attention"])
+        tpm = np.load(key["tpm"])
 
-        # return {
-        #     "t_bins": item["t_bins"],
-        #     "ftr": item["ftr"],
-        #     "rel_pos": item["rel_pos"],
-        #     "abs_pos": item["abs_pos"],
-        #     "gene_exp": item["gene_exp"]  
-        # }
+        if feature is None:
+            return None
 
-        return {
-            "ftr": item["ftr"],
-            "gene_exp": item["gene_exp"]
-        }
+        normalized = self.normalize_feature(feature, attention, tpm, log=True)
+        if normalized is None:
+            return None
+        feature, attention, tpm = normalized
+        return feature.unsqueeze(0), attention.unsqueeze(0), tpm.unsqueeze(0)
 
 
-def collate_fn(batch):
-    ftr_list = [x["ftr"] for x in batch]
-    padded_ftr = pad_sequence(ftr_list, batch_first=True, padding_value=0.0)
+class CustomDataset:
+    def __init__(self, feature_filename: str, feature_dir: str, feature_map: dict):
+        self.feature_filename = feature_filename
+        self.feature_dir = feature_dir
+        self.feature_map = feature_map
 
-    lengths = [len(seq) for seq in ftr_list]
-    max_len = max(lengths)
-    binary_mask = torch.zeros(len(batch), max_len, dtype=torch.float32)
-    for i, length in enumerate(lengths):
-        binary_mask[i, :length] = 1.0
+    def _prep_features(self):
+        feature_file = self.feature_filename
+        features_df = pd.read_csv(feature_file, sep="\t")
+        feature_list = features_df.iloc[:, 6].astype(str).tolist()
 
-    additive_mask = torch.zeros_like(binary_mask)
-    additive_mask[binary_mask == 0] = -1e9
+        feature_dir = self.feature_dir
+        feature_map = self.feature_map
+        dict_list = []
+        for feature in feature_list:
+            ftr = {}
+            for feature_key, feature_basename in feature_map.items():
+                ftr[feature_key] = os.path.join(
+                    feature_dir, feature, feature_basename)
+            dict_list.append(ftr)
 
-    # rel_pos_list = [x["rel_pos"] for x in batch]
-    # padded_rel_pos = pad_sequence(
-    #     rel_pos_list, batch_first=True, padding_value=0.0)
+        return dict_list
 
-    gene_exp = torch.stack([x["gene_exp"] for x in batch])
-    # abs_pos = torch.stack([x["abs_pos"] for x in batch])
-    # t_len = torch.stack([x["t_len"] for x in batch])
-
-    # return {
-    #     "ftr": padded_ftr,
-    #     "rel_pos": padded_rel_pos,
-    #     "gene_exp": gene_exp,
-    #     "abs_pos": abs_pos,
-    #     "t_len": t_len,
-    #     "attn_mask": additive_mask
-    # }
-
-    return {
-        "ftr": padded_ftr,
-        "gene_exp": gene_exp,
-        "attn_mask": additive_mask
-    }
+    def _get_dataset(self):
+        feature_dicts = self._prep_features()
+        return feature_dicts
