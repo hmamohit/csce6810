@@ -216,3 +216,15 @@ training*.png
 # OS files
 .DS_Store
 data/
+*.txt
+!requirements.txt
+*.md
+!README.md
+!readme.md
+!*.csv
+*.yml
+!config*.yml
+!envieronment.yml
+.*
+.codegraph
+graphify-out

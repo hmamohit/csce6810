@@ -31,14 +31,13 @@ def compute_metrics(preds: torch.Tensor, targets: torch.Tensor) -> dict:
     r2 = r2_score(preds, targets).item()
     mse = mean_squared_error(preds, targets).item()
     mae = mean_absolute_error(preds, targets).item()
-    # rmse = root_mean_squared_error_using_sliding_window(preds, targets).item()
     mape = mean_absolute_percentage_error(preds, targets).item()
 
     return {"pearson": pearson, "spearman": spearman, "r2": r2, "mse": mse, "mae": mae, "mape": mape}
 
 
-def make_warmup_then_plateau(optimizer, warmup_steps, base_lr,
-                             plateau_factor=0.5, plateau_patience=5, min_lr=1e-4):
+def make_warmup_then_plateau(optimizer, warmup_steps, base_lr=1e-2,
+                             plateau_factor=0.5, plateau_patience=5, min_lr=1e-5):
     def warmup_fn(step):
         if warmup_steps == 0:
             return 1.0
@@ -52,18 +51,12 @@ def make_warmup_then_plateau(optimizer, warmup_steps, base_lr,
     return warmup_scheduler, plateau_scheduler
 
 
-def run_epoch(model, loader, device, criterion, optimizer=None,
-              warmup_scheduler=None, global_step=None, warmup_steps=0):
-    """One pass over `loader`. If optimizer is given, trains; else evaluates."""
-    is_train = optimizer is not None
-    model.train() if is_train else model.eval()
+def train_loop(model, loader, device, criterion, optimizer):
+    model.train()
+    pbar = tqdm(loader, desc="Training", leave=True)
 
     total_loss = 0.0
     n_samples = 0
-    all_preds, all_targets = [], []
-    pbar = tqdm(
-        loader, desc="Training" if is_train else "Evaluating", leave=True)
-    torch.set_grad_enabled(is_train)
     for batch in pbar:
         if batch is None:
             continue
@@ -72,29 +65,57 @@ def run_epoch(model, loader, device, criterion, optimizer=None,
         attention = attention.to(device)
         target = target.to(device)
 
+        optimizer.zero_grad()
+
         pred = model(feature, attention)
+
         loss = criterion(pred, target)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-        if is_train:
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            if global_step is not None and global_step[0] < warmup_steps:
-                warmup_scheduler.step()
-            global_step[0] += 1 if global_step is not None else 0
-
+        optimizer.step()
         pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         bs = target.size(0)
         total_loss += loss.item() * bs
         n_samples += bs
-        all_preds.append(pred.detach().cpu().reshape(-1))
-        all_targets.append(target.detach().cpu().reshape(-1))
-
-    torch.set_grad_enabled(True)
 
     avg_loss = total_loss / n_samples
+    return avg_loss
+
+
+def evaluate_loop(model, loader, device, criterion, scheduler=None):
+    model.eval()
+    pbar = tqdm(loader, desc="Evaluating", leave=True)
+
+    all_preds, all_targets = [], []
+    total_loss = 0.0
+    n_samples = 0
+
+    with torch.no_grad():
+        for batch in pbar:
+            if batch is None:
+                continue
+            feature, attention, target = batch
+            feature = feature.to(device)
+            attention = attention.to(device)
+            target = target.to(device)
+
+            pred = model(feature, attention)
+            loss = criterion(pred, target)
+
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+            bs = target.size(0)
+            total_loss += loss.item() * bs
+            n_samples += bs
+            all_preds.append(pred.detach().cpu().reshape(-1))
+            all_targets.append(target.detach().cpu().reshape(-1))
+
+    avg_loss = total_loss / n_samples
+    if scheduler is not None:
+        scheduler.step(avg_loss)
+
     metrics = compute_metrics(torch.cat(all_preds), torch.cat(all_targets))
     metrics["loss"] = avg_loss
     return metrics
@@ -162,13 +183,12 @@ def get_dataloader(ds: Dataset, batch_size: int = 20, shuffle: bool = False, isD
         )
 
 
-def train(num_epochs=50, warmup_epochs=3, lr=3e-4, weight_decay=0.05,
+def train(num_epochs=50, warmup_epochs=3, lr=1e-2, weight_decay=0.05,
           device=None, ckpt_path="best_model.pt"):
 
     num_epochs = config.NUM_EPOCHS
-    warmup_epochs = config.WARMUP_STEPS
     lr = config.LR
-    weight_decay = 0.05
+    weight_decay = config.WEIGHT_DECAY
     ckpt_path = config.BEST_MODEL
 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -191,38 +211,31 @@ def train(num_epochs=50, warmup_epochs=3, lr=3e-4, weight_decay=0.05,
     val_dl = get_dataloader(ds=val_ds, batch_size=batch_size,
                             shuffle=False, isDistributed=config.IS_DISTRIBUTED)
 
-    model = VisionModel().to(device)
-    criterion = nn.HuberLoss()
+    model = VisionModel(ftr_size=200, patch_size=8,
+                        embed_dim=256, depth=8, num_heads=8,
+                        mlp_ratio=4.0, dropout=0.1,
+                        attn_dropout=0.1).to(device)
+    criterion = nn.L1Loss()
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    steps_per_epoch = len(train_dl)
-    warmup_steps = warmup_epochs * steps_per_epoch
-    warmup_scheduler, plateau_scheduler = make_warmup_then_plateau(
-        optimizer, warmup_steps=warmup_steps, base_lr=lr,
-        min_lr = config.MIN_LR
-    )
-    global_step = [0]
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.2, patience=5)
 
     best_val_loss = float("inf")
 
     for epoch in range(1, num_epochs + 1):
-        train_metrics = run_epoch(
-            model, train_dl, device, criterion, optimizer=optimizer,
-            warmup_scheduler=warmup_scheduler, global_step=global_step,
-            warmup_steps=warmup_steps,
-        )
-        val_metrics = run_epoch(model, val_dl, device, criterion)
-
-        if global_step[0] >= warmup_steps:
-            plateau_scheduler.step(val_metrics["loss"])
+        train_loss = train_loop(
+            model, train_dl, device, criterion, optimizer=optimizer)
+        val_metrics = evaluate_loop(
+            model, val_dl, device, criterion, scheduler)
 
         current_lr = optimizer.param_groups[0]["lr"]
-        status = f"Epoch {epoch:03d} | lr {current_lr:.2e} | train L1={train_metrics['loss']:.4f} | val L1={val_metrics['loss']:.4f}; Pearson={val_metrics['pearson']:.4f}; Spearman={val_metrics['spearman']:.4f}; R2={val_metrics['r2']:.4f}; MSE={val_metrics['mse']:.4f}; MAE={val_metrics['mae']:.4f}; MAPE={val_metrics['mape']:.4f}"
+        status = f"Epoch {epoch:03d} | lr {current_lr:.2e} | train loss={train_loss:.4f} | val loss={val_metrics['loss']:.4f}; Pearson={val_metrics['pearson']:.4f}; Spearman={val_metrics['spearman']:.4f}; R2={val_metrics['r2']:.4f}; MSE={val_metrics['mse']:.4f}; MAE={val_metrics['mae']:.4f}; MAPE={val_metrics['mape']:.4f}"
         print(status)
         log.info(status)
 
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
+
             print(
                 f"New best model found at epoch {epoch}, saving to {ckpt_path}")
             log.info(
@@ -240,8 +253,8 @@ def train(num_epochs=50, warmup_epochs=3, lr=3e-4, weight_decay=0.05,
     test_dl = get_dataloader(
         ds=test_ds, batch_size=batch_size, shuffle=False, isDistributed=config.IS_DISTRIBUTED)
 
-    test_metrics = run_epoch(model, test_dl, device, criterion)
-    status = f"TEST on {config.ORGANISM} | L1={test_metrics['loss']:.4f} | Pearson={test_metrics['pearson']:.4f}; Spearman={test_metrics['spearman']:.4f}; R2={test_metrics['r2']:.4f}; MSE={test_metrics['mse']:.4f}; MAE={test_metrics['mae']:.4f}; MAPE={test_metrics['mape']:.4f}"
+    test_metrics = evaluate_loop(model, test_dl, device, criterion)
+    status = f"TEST on {config.ORGANISM} | loss={test_metrics['loss']:.4f} | Pearson={test_metrics['pearson']:.4f}; Spearman={test_metrics['spearman']:.4f}; R2={test_metrics['r2']:.4f}; MSE={test_metrics['mse']:.4f}; MAE={test_metrics['mae']:.4f}; MAPE={test_metrics['mape']:.4f}"
     print(status)
     log.info(status)
 
@@ -254,8 +267,8 @@ def train(num_epochs=50, warmup_epochs=3, lr=3e-4, weight_decay=0.05,
     test_dl = get_dataloader(
         ds=test_ds, batch_size=batch_size, shuffle=False, isDistributed=config.IS_DISTRIBUTED)
 
-    test_metrics = run_epoch(model, test_dl, device, criterion)
-    status = f"TEST on {config.CROSS_ORGANISM} | L1={test_metrics['loss']:.4f} | Pearson={test_metrics['pearson']:.4f}; Spearman={test_metrics['spearman']:.4f}; R2={test_metrics['r2']:.4f}; MSE={test_metrics['mse']:.4f}; MAE={test_metrics['mae']:.4f}; MAPE={test_metrics['mape']:.4f}"
+    test_metrics = evaluate_loop(model, test_dl, device, criterion)
+    status = f"TEST on {config.CROSS_ORGANISM} | loss={test_metrics['loss']:.4f} | Pearson={test_metrics['pearson']:.4f}; Spearman={test_metrics['spearman']:.4f}; R2={test_metrics['r2']:.4f}; MSE={test_metrics['mse']:.4f}; MAE={test_metrics['mae']:.4f}; MAPE={test_metrics['mape']:.4f}"
     print(status)
     log.info(status)
 

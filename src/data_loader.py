@@ -39,7 +39,8 @@ class GeneExpressionDataset(Dataset):
             feature = np.clip(feature, 0.0, upper) / upper
 
         tensor_feature = torch.from_numpy(np.array(feature, dtype=np.float32))
-        tensor_attention = torch.from_numpy(np.array(attention, dtype=np.float32))
+        tensor_attention = torch.from_numpy(
+            np.array(attention, dtype=np.float32))
         tensor_tpm = torch.tensor(tpm, dtype=torch.float32)
 
         return tensor_feature, tensor_attention, tensor_tpm
@@ -48,6 +49,7 @@ class GeneExpressionDataset(Dataset):
         key = self.feature_list[idx]
         feature = self._load_valid_matrix(feature=key["feature"])
         attention = np.load(key["attention"])
+        attention = np.clip(attention, 1.0, 1.0)
         tpm = np.load(key["tpm"])
 
         if feature is None:

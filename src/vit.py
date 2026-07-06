@@ -1,6 +1,5 @@
 import os
 import sys
-
 import torch
 import torch.nn as nn
 from positional_encoding import PositionalEncoding
@@ -9,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
 class VisionTransformer(nn.Module):
-    def __init__(self, num_patches: int, embed_dim: int = 256, depth: int = 6,
+    def __init__(self, num_patches: int, embed_dim: int = 256, depth: int = 8,
                  num_heads: int = 8, mlp_ratio: float = 4.0,
                  dropout: float = 0.1, attn_dropout: float = 0.1):
         super().__init__()

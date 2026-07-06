@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 class VisionModel(nn.Module):
     def __init__(self, ftr_size: int = 200, patch_size: int = 8,
-                 embed_dim: int = 256, depth: int = 6, num_heads: int = 8,
+                 embed_dim: int = 256, depth: int = 8, num_heads: int = 8,
                  mlp_ratio: float = 4.0, dropout: float = 0.1,
                  attn_dropout: float = 0.1):
         super().__init__()

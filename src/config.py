@@ -1,7 +1,7 @@
 
-ORGANISM = 'mm10'
+ORGANISM = 'hg38'
 RESOLUTION = 1000
-CROSS_ORGANISM = 'hg38'
+CROSS_ORGANISM = 'mm10'
 
 DATA_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features'
 DICT_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features'
@@ -29,10 +29,11 @@ NUM_ENCODERS = 4
 DROPOUT = 0.1
 BIAS = True
 
-BATCH_SIZE = 64
+BATCH_SIZE = 20
 WARMUP_STEPS = 5
-NUM_EPOCHS = 200
-PATIENT = 20
-LR = 1e-2
-MIN_LR = 1e-4
+NUM_EPOCHS = 100
+PATIENT = 10
+LR = 1e-3
+WEIGHT_DECAY = 1e-4
+MIN_LR = 1e-5
 IS_DISTRIBUTED = False

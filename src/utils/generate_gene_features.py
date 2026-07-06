@@ -8,27 +8,28 @@ import cooler
 ENHANCER_PROMOTER_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/raw_data/enhancer_promoter'
 COOL_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/raw_data/cool'
 GENE_EXPRESSION_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression'
-OUTPUT_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features'
+OUTPUT_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features_256'
 GENE_EXPRESSION_FEATURES_DICT = 'gene_expression_features_dict'
 TRAIN_GENE_EXPRESSION_FEATURES_DICT = 'gene_expression_features_dict'
 VAL_GENE_EXPRESSION_FEATURES_DICT = 'gene_expression_features_dict'
 TEST_GENE_EXPRESSION_FEATURES_DICT = 'gene_expression_features_dict'
 
 RESOLUTION = 1000
+WINDOW_SIZE = 256
 
 ENHANCER_PROMOTER_FILENAMES = {
-    # "hg38": "hg38.encodeCcreCombined.bed",
+    "hg38": "hg38.encodeCcreCombined.bed",
     "mm10": "mm10.encodeCcreCombined.bed"
 }
 
 GENE_EXPRESSION_FILENAMES = {
-    # "hg38": ["dtag", "dmso", "auxin_6h", "auxin_no_treatment"],
+    "hg38": ["dtag", "dmso", "auxin_6h", "auxin_no_treatment"],
     "mm10": [
-        # "pnd11_mature",
-        # "pnd11_immature",
-        # "pnd6_immature",
-        # "pnd6_precursors",
-        # "xen",
+        "pnd11_mature",
+        "pnd11_immature",
+        "pnd6_immature",
+        "pnd6_precursors",
+        "xen",
         "tsc",
         "pnd22",
         "pnd6",
@@ -41,18 +42,18 @@ GENE_EXPRESSION_FILENAMES = {
 
 
 TRAIN_CHROMOSOME = {
-    # "hg38": ["chr1", "chr2", "chr3", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr12", "chr13", "chr14", "chr17", "chr18", "chr19", "chr22"],
+    "hg38": ["chr1", "chr2", "chr3", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9", "chr12", "chr13", "chr14", "chr17", "chr18", "chr19", "chr22"],
     "mm10": ["chr1", "chr2", "chr3", "chr4", "chr5", "chr6", "chr7", "chr8", "chr9",  "chr12", "chr13", "chr14", "chr17"]
 }
 
 VAL_CHROMOSOME = {
-    # "hg38": ["chr11", "chr16",  "chr21"],
+    "hg38": ["chr11", "chr16",  "chr21"],
     "mm10": ["chr11", "chr16", "chr19"]
 }
 
 TEST_CHROMOSOME = {
-    # "hg38": ["chr11", "chr16",  "chr21", "chr10", "chr15", "chr20"],
-    "mm10": ["chr11", "chr16", "chr19", "chr10", "chr15", "chr18"]
+    "hg38": ["chr12", "chr17",  "chr22", "chr10", "chr15", "chr20"],
+    "mm10": ["chr12", "chr14", "chr17", "chr10", "chr15", "chr18"]
 }
 
 GENE_EXPRESSION_COLUMNS = ["gene_id", "gene_name",
@@ -110,7 +111,8 @@ with open(f'{OUTPUT_DIR}/{GENE_EXPRESSION_FEATURES_DICT}_{RESOLUTION}.csv', 'a')
                     print(
                         f"Processing gene expression: {gene_expression_filename} with shape {gene_expression_df.shape}")
                     for gene_row in gene_expression_df.itertuples(index=False):
-                        attention = np.ones((200, 200), dtype=np.float32)
+                        attention = np.ones(
+                            (WINDOW_SIZE, WINDOW_SIZE), dtype=np.float32)
                         tpm = gene_row.mean_tpm
 
                         search_window = (gene_row.tss - 100000,
@@ -145,12 +147,10 @@ with open(f'{OUTPUT_DIR}/{GENE_EXPRESSION_FEATURES_DICT}_{RESOLUTION}.csv', 'a')
                                 enhancer_promoter_start_idx = max(
                                     0, int(math.floor(enhancer_promoter_start / RESOLUTION)))
                                 enhancer_promoter_end_idx = min(
-                                    200, int(math.ceil(enhancer_promoter_end / RESOLUTION)))
+                                    WINDOW_SIZE, int(math.ceil(enhancer_promoter_end / RESOLUTION)))
 
                                 attention[enhancer_promoter_start_idx:enhancer_promoter_end_idx,
                                           enhancer_promoter_start_idx:enhancer_promoter_end_idx] += enhancer_promoter_row["maxZ"]
-                                # print(
-                                #     f"Updated attention matrix for gene {gene_row.gene_name} ({gene_row.gene_id}) on {current_chromosome} with enhancer/promoter from {enhancer_promoter_start} to {enhancer_promoter_end} (maxZ: {enhancer_promoter_row['maxZ']})")
 
                         os.makedirs(f"{OUTPUT_DIR}/{record}", exist_ok=True)
                         np.save(f"{OUTPUT_DIR}/{record}/feature.npy", feature)
