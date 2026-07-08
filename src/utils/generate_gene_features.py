@@ -115,8 +115,8 @@ with open(f'{OUTPUT_DIR}/{GENE_EXPRESSION_FEATURES_DICT}_{RESOLUTION}.csv', 'a')
                             (WINDOW_SIZE, WINDOW_SIZE), dtype=np.float32)
                         tpm = gene_row.mean_tpm
 
-                        search_window = (gene_row.tss - 100000,
-                                         gene_row.tss + 100000)
+                        search_window = (gene_row.tss - 128000,
+                                         gene_row.tss + 128000)
 
                         if search_window[0]//RESOLUTION < 0 or search_window[1]//RESOLUTION > chrom_matrix.shape[0]:
                             print(

@@ -3,8 +3,8 @@ ORGANISM = 'hg38'
 RESOLUTION = 1000
 CROSS_ORGANISM = 'mm10'
 
-DATA_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features'
-DICT_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features'
+DATA_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features_256'
+DICT_DIR = '/home/hc0783@unt.ad.unt.edu/workspace/geneexp/data/processed_raw_data/gene_expression_features_256'
 GENE_EXPRESSION_FEATURES_DICT = 'gene_expression_features_dict'
 
 MODEL_NAME = f'get_{ORGANISM}_{RESOLUTION}'
@@ -21,17 +21,20 @@ FEATURE_MAP = {
 IS_DISTRIBUTED = False
 IS_LOAD_CHECKPOINT = False
 
-NUMS_WORKERS = 40
-D_MODEL = 256
-HIDDEN_DIM = 1024
-NUM_HEADS = 4
-NUM_ENCODERS = 4
+FTR_SIZE = 256
+PATCH_SIZE = 8
+EMBED_DIM = 256
+DEPTH = 6
+NUM_HEAD = 8
+MLP_RATIO = 4.0
 DROPOUT = 0.1
+ATTENTION_DROPOUT = 0.1
 BIAS = True
+
 
 BATCH_SIZE = 20
 WARMUP_STEPS = 5
-NUM_EPOCHS = 100
+NUM_EPOCHS = 50
 PATIENT = 10
 LR = 1e-3
 WEIGHT_DECAY = 1e-4

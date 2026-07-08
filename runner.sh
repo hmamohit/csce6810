@@ -13,4 +13,5 @@ source /opt/miniconda3/etc/profile.d/conda.sh  # Adjust path to your conda insta
 conda activate hicinterpolate
 cd /home/hc0783@unt.ad.unt.edu/workspace/geneexp/csce6810/
 
-torchrun --standalone --nproc_per_node=1 src/train.py
+# torchrun --standalone --nproc_per_node=1 src/train.py
+torchrun --standalone --nproc_per_node=1 src/train.py --optuna --study-name get_optuna_mo_exact_attention

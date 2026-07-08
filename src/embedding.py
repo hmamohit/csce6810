@@ -3,8 +3,8 @@ import torch.nn as nn
 
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, ftr_size: int = 256, patch_size: int = 8,
-                 in_channels: int = 2, embed_dim: int = 256):
+    def __init__(self, ftr_size: int, patch_size: int,
+                 in_channels: int, embed_dim: int):
         super().__init__()
         assert ftr_size % patch_size == 0, "ftr_size must be divisible by patch_size"
 

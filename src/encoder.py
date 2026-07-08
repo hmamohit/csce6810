@@ -9,8 +9,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 class TransformerEncoderBlock(nn.Module):
     """Pre-norm Transformer block: MHSA + MLP, each with a residual connection."""
 
-    def __init__(self, embed_dim: int, num_heads: int = 8, mlp_ratio: float = 4.0,
-                 dropout: float = 0.0, attn_dropout: float = 0.0):
+    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float,
+                 dropout: float, attn_dropout: float):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
         self.attn = MultiHeadSelfAttention(

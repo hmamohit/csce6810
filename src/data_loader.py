@@ -33,7 +33,7 @@ class GeneExpressionDataset(Dataset):
             tpm = self.log1p(tpm)
 
         if normalize:
-            upper = max(np.percentile(feature, CLIPPING_PERCENTILE))
+            upper = np.max(np.percentile(feature, CLIPPING_PERCENTILE))
             if upper <= _EPSILON:
                 return None
             feature = np.clip(feature, 0.0, upper) / upper
@@ -48,14 +48,19 @@ class GeneExpressionDataset(Dataset):
     def __getitem__(self, idx):
         key = self.feature_list[idx]
         feature = self._load_valid_matrix(feature=key["feature"])
-        attention = np.load(key["attention"])
-        attention = np.clip(attention, 1.0, 1.0)
-        tpm = np.load(key["tpm"])
 
         if feature is None:
             return None
 
-        normalized = self.normalize_feature(feature, attention, tpm, log=True)
+        attention = np.load(key["attention"])
+        # attention = np.clip(attention, 1.0, 1.0)
+        # feature_mask = (feature <= 0)
+        # attention[feature_mask] = 0.0
+
+        tpm = np.load(key["tpm"])
+
+        normalized = self.normalize_feature(
+            feature, attention, tpm, log=True)
         if normalized is None:
             return None
         feature, attention, tpm = normalized
